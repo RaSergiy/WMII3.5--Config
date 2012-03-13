@@ -1,0 +1,396 @@
+#!/bin/sh
+
+
+MODKEY=Mod4
+
+# Colors tuples: "<text> <background> <border>"
+WMII_NORMCOLORS='#777777 #000000 #111111'
+WMII_FOCUSCOLORS='#88FFBB #000000 #777777'
+WMII_BARCOLORS_F='#AA4444 #000000 #AA4444'
+WMII_BARCOLORS_N='#DDDDDD #000000 #222222'
+
+WMII_FONT='-*-terminus-medium-r-normal-*-16-*-*-*-*-*-iso10646-*'
+WMII_FONT_BOLD='-*-terminus-bold-r-normal-*-16-*-*-*-*-*-iso10646-*'
+
+set -- $(echo $WMII_NORMCOLORS $WMII_FOCUSCOLORS)
+set -- $(echo $WMII_BARCOLORS_F $WMII_BARCOLORS_N)
+WMII_MENU="dmenu -fn $WMII_FONT -nf $1 -nb $2 -sf $4 -sb $5"
+WMII_9MENU="wmii9menu -font $WMII_FONT -nf $1 -nb $2 -sf $4 -sb $5 -br $6"
+
+
+WMII_TERM_C="urxvt -pe tabbed -e screen"
+WMII_TERM_S="urxvt"
+WMII_TERM_CLEAR="urxvt"
+WMII_TERM="urxvt -e screen"
+
+
+wmiir write /colrules <<!
+/.*/ -> 58+42
+!
+
+# ~ = floating mode
+# ! - current tag
+wmiir write /tagrules <<@@
+/.*/ -> !
+/.*/ -> 1
+@@
+
+amix_st(){
+	amixer set PCM "$1"
+	Z=`amixer get PCM | grep '\[[0-9]*%\]' --only-matching` 
+	echo $Z | dzen2 -p '2' -x '362' -y '0' -h '16' -w '300' -ta c -fg '#FFFF00' -bg '#FF0000' -fn "$WMII_FONT_BOLD"
+}
+
+msg_inf(){
+  echo $* | dzen2 -p '10' -x '12' -h '16' -w '1000' -ta c -fg '#EEEEEE' -bg '#004400' -fn "$WMII_FONT_BOLD" &
+}
+
+msg_err(){
+  echo $* | dzen2 -p '10' -x '12' -h '16' -w '1000' -ta c -fg '#EEEE44' -bg '#DD0000' -fn "$WMII_FONT_BOLD" &
+}
+
+media_mount(){
+T=`mount "$1" 2>&1`
+if [[ $? != 0 ]]; then
+	msg_err "$T"
+else
+	msg_inf "$1 ПРИМОНТИРОВАНО"
+fi
+}
+
+media_forceumount(){
+MOU=`cat /etc/mtab | grep "$1"`
+if [[ -z $MOU ]]
+then
+  msg_inf "$1 НЕ ПРИМОНТИРОВАНО"
+else
+  T1=`sudo umount $1 2>&1`
+  if [[ $? != 0 ]] 
+  then
+    sudo fuser -k -m "$1"
+    sudo umount "$1"
+    if [[ $? == 0 ]]
+    then
+      msg_inf "$1 НАСИЛЬНО ОТМОНТИРОВАНО"
+    else
+      msg_err "$T1"
+    fi
+  else
+     msg_inf "$1 ОТМОНТИРОВАНО"
+  fi
+fi
+}
+
+mount_list(){
+Z=$(
+for a in `cat /etc/fstab | sed 's/#.*$//' | grep '/media/[a-zA-Z0-9]*' --only-matching`; do
+	if [[ -z `cat /etc/mtab | grep "$a"` ]]; then
+		echo "$a"
+	fi
+done | $WMII_MENU)
+
+if [[ -z $Z ]]; then
+	return
+else
+	media_mount "$Z"
+fi
+}
+
+
+umount_list(){
+Z=`cat /etc/mtab | sed 's/#.*$//' | grep '/media/[a-zA-Z0-9]*' --only-matching | $WMII_MENU`
+if [[ -z $Z ]]; then
+	return
+else
+	media_forceumount "$Z"
+fi
+}
+
+# Status Bar Info
+status() {
+  echo -n `mpc --format "[%file%]" | tr "\n" "^" | sed --silent 's/.*\/\(.*\)^.*#\([0-9]*\/[0-9]*\)\s*\(.*\)\s(.*/\2: \3: \1 |/p'`
+  echo -n " `/sbin/ifconfig ppp0 | sed 's/.*(\([0-9.]*\) \(.\).*(\([0-9.]*\) \(.\).*/G:\1\2 : \3\4 |/p' --silent`"
+  echo -n " $(skb -1) $(date +"%Y.%0m.%0d.%u %H:%M:%S")"
+}
+
+# Event processing
+#  processed later by `wmiiloop' and evaled
+eventstuff() {
+	cat <<'!'
+	# Events
+	Event Start
+		case "$1" in
+		wmiirc)
+			exit;
+		esac
+	Event Key
+		fn=$(echo $@ | sed 's/[^a-zA-Z_0-9]/_/g')
+		Key_$fn $@
+	Event CreateTag
+		echo "$WMII_NORMCOLORS" "$@" | wmiir create "/lbar/$@"
+	Event DestroyTag
+		wmiir remove "/lbar/$@"
+	Event FocusTag
+		wmiir xwrite "/lbar/$@" "$WMII_BARCOLORS_F" "$@"
+	Event UnfocusTag
+		wmiir xwrite "/lbar/$@" "$WMII_BARCOLORS_N" "$@"
+	Event UrgentTag
+		shift
+		wmiir xwrite "/lbar/$@" "*$@"
+	Event NotUrgentTag
+		shift
+		wmiir xwrite "/lbar/$@" "$@"
+	Event LeftBarClick
+		shift
+		wmiir xwrite /ctl view "$@"
+	# Actions
+	Action quit
+		wmiir xwrite /ctl quit
+	Action rehash
+		proglist $PATH >$progsfile
+	Action status
+		set +xv
+		if wmiir remove /rbar/status 2>/dev/null; then
+			sleep 2
+		fi
+		echo "$WMII_BARCOLORS_N" | wmiir create /rbar/status
+		while status | wmiir write /rbar/status; do
+			sleep 1
+		done
+
+
+
+	Event ClientMouseDown
+		client=$1; button=$2
+		case "$button" in
+		3)
+			do=$($WMII_9MENU -initial "${menulast:-SomeRandomName}" Nop Delete)
+			case "$do" in
+			Delete)
+				wmiir xwrite /client/$client/ctl kill
+			esac
+			menulast=${do:-"$menulast"}
+		esac
+
+
+# ==== Key Bindings ====
+#
+	Key $MODKEY-Control-t
+		case $(wmiir read /keys | wc -l | tr -d ' \t\n') in
+		0|1)
+			echo -n $Keys | tr ' ' '\012' | wmiir write /keys
+			wmiir xwrite /ctl grabmod $MODKEY;;
+		*)
+			wmiir xwrite /keys $MODKEY-Control-t
+			wmiir xwrite /ctl grabmod Mod3;;
+		esac
+# eginquv
+
+# PROG BINDINGS
+	Key $MODKEY-bracketleft
+		mount_list &
+	Key $MODKEY-bracketright
+		umount_list &
+
+	Key $MODKEY-e
+		import -window root ~/screenshot.png &
+	Key $MODKEY-m
+		$WMII_TERM_CLEAR -e alsamixer &
+	Key $MODKEY-n
+		$WMII_TERM_CLEAR -e ncmpc &
+	Key $MODKEY-z
+		mpc prev &
+	Key $MODKEY-x
+		mpc next &
+	Key $MODKEY-Shift-z
+		mpc seek -00:00:10 &
+	Key $MODKEY-Shift-x
+		mpc seek +00:00:10 &
+	Key $MODKEY-Control-z
+		mpc seek -00:01:00 &
+	Key $MODKEY-Control-x
+		mpc seek +00:01:00 &
+
+	Key $MODKEY-c
+		mpc toggle &
+	Key $MODKEY-Shift-c
+		mpc stop &
+
+	Key $MODKEY-y
+		sudo synaptic
+
+	Key $MODKEY-f
+		firefox &
+	Key $MODKEY-b
+		wine c:\\soft\\BibleQuote\\BQ6.exe &
+	Key $MODKEY-o
+		oowriter &
+	Key $MODKEY-w
+		kchmviewer &
+	Key $MODKEY-r
+		stardict &
+
+	Key $MODKEY-XF86AudioPlay
+		$WMII_TERM_CLEAR -e ncmpc &
+	Key Shift-XF86AudioPlay
+		mpc stop &
+	Key XF86AudioPlay
+		mpc toggle &
+
+	Key XF86AudioLowerVolume
+		amix_st '5%-,5%-' &
+	Key XF86AudioRaiseVolume
+		amix_st '5%+,5%+' &
+
+	Key Shift-XF86AudioRaiseVolume
+		amix_st '5%+,0%+' &
+	Key $MODKEY-XF86AudioRaiseVolume
+		amix_st '0%+,5%+' &
+
+	Key Shift-XF86AudioLowerVolume
+		amix_st '5%-,0%-' &
+	Key $MODKEY-XF86AudioLowerVolume
+		amix_st '0%-,5%-' &
+
+	Key XF86HomePage
+		firefox &
+	Key XF86Mail
+		$WMII_TERM_CLEAR -e mutt &
+	Key XF86Calculator
+		$WMII_TERM_CLEAR -e irb &
+
+
+    
+
+# DEFAULT Keys
+
+	Key $MODKEY-Return
+		$WMII_TERM &
+	Key $MODKEY-Control-Return
+		$WMII_TERM_C &
+	Key $MODKEY-Shift-Return
+		$WMII_TERM_S &
+
+	Key $MODKEY-h
+		wmiir xwrite /tag/sel/ctl select left
+	Key $MODKEY-l
+		wmiir xwrite /tag/sel/ctl select right
+	Key $MODKEY-j
+		wmiir xwrite /tag/sel/ctl select down
+	Key $MODKEY-k
+		wmiir xwrite /tag/sel/ctl select up
+	Key $MODKEY-space
+		wmiir xwrite /tag/sel/ctl select toggle
+	Key $MODKEY-d
+		wmiir xwrite /tag/sel/ctl colmode sel default
+	Key $MODKEY-s
+		wmiir xwrite /tag/sel/ctl colmode sel stack
+	Key $MODKEY-a
+		Action $(actionlist | $WMII_MENU -b) &
+	Key $MODKEY-p
+		sh -c "$($WMII_MENU -b <$progsfile)" &
+
+	Key $MODKEY-Shift-h
+		wmiir xwrite /tag/sel/ctl send sel left
+	Key $MODKEY-Shift-l
+		wmiir xwrite /tag/sel/ctl send sel right
+	Key $MODKEY-Shift-j
+		wmiir xwrite /tag/sel/ctl send sel down
+	Key $MODKEY-Shift-k
+		wmiir xwrite /tag/sel/ctl send sel up
+	Key $MODKEY-Shift-space
+		wmiir xwrite /tag/sel/ctl send sel toggle
+
+	Key $MODKEY-Control-q
+		wmiir xwrite /client/sel/ctl kill
+!
+	for i in 0 1 2 3 4 5 6 7 8 9; do
+		cat <<!
+	Key $MODKEY-$i
+		wmiir xwrite /ctl view "$i"
+	Key $MODKEY-Shift-$i
+		wmiir xwrite /client/sel/tags "$i"
+!
+	done
+}
+
+# WM Configuration
+wmiir write /ctl << EOF
+font $WMII_FONT
+focuscolors $WMII_FOCUSCOLORS
+normcolors $WMII_NORMCOLORS
+grabmod $MODKEY
+border 1
+EOF
+
+# Feed events to `wmiiloop' for processing
+IFS=''
+eval $(eventstuff | sed "s/\\\$MODKEY/$MODKEY/g;s/^[	]//" | wmiiloop)
+unset IFS
+
+# Functions
+Action() {
+	action=$1; shift
+	if [ -n "$action" ]; then
+		Action_$action $@ \
+		|| conf_which $action $@
+	fi
+}
+
+proglist() {
+	paths=$(echo "$@" | sed 'y/:/ /')
+	ls -lL $paths 2>/dev/null \
+		| awk '$1 ~ /^[^d].*x/ { print $NF }' \
+		| sort | uniq
+}
+
+progsfile="$WMII_NS_DIR/.proglist"
+Action status &
+proglist $PATH >$progsfile &
+xsetroot -solid '#000000' &
+
+export WMII_MENU WMII_9MENU WMII_FONT WMII_TERM WMII_FONT_BOLD WMII_FOCUSCOLORS WMII_SELCOLORS WMII_NORMCOLORS
+
+# Setup Tag Bar
+wmiir ls /lbar |
+while read bar; do
+	wmiir remove "/lbar/$bar"
+done
+seltag="$(wmiir read /tag/sel/ctl 2>/dev/null)"
+wmiir ls /tag | sed -e 's|/||; /^sel$/d' |
+while read tag; do
+	if [ "X$tag" = "X$seltag" ]; then
+		echo "$WMII_BARCOLORS_F" "$tag" | wmiir create "/lbar/$tag" 
+	else
+		echo "$WMII_BARCOLORS_N" "$tag" | wmiir create "/lbar/$tag"
+	fi
+done
+
+# More functions
+
+actionlist() {
+	{	proglist $WMII_CONFPATH
+		echo -n $Actions | tr ' ' '\012'
+	} | sort | uniq
+}
+
+conf_which() {
+	which=$(which which)
+	prog=$(PATH="$WMII_CONFPATH" $which $1)
+	shift
+	if [ -n "$prog" ]; then
+		$prog
+	fi
+}
+
+# Stop any running instances of wmiirc
+echo Start wmiirc | wmiir write /event || exit 1
+
+wmiir read /event |
+while read event; do
+	set -- $event
+	event=$1; shift
+	Event_$event $@
+done 2>/dev/null
+
+
